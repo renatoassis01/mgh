@@ -11,9 +11,10 @@ import (
 	"strings"
 
 	survey "github.com/AlecAivazis/survey/v2"
+	. "github.com/logrusorgru/aurora"
 )
 
-const baseURL = "https://api.github.com/users"
+const baseURL = "https://api.github.com"
 
 //API base
 type API struct {
@@ -26,20 +27,44 @@ type Repository struct {
 }
 
 type User struct {
-	username string
-	repos    []string
-	token    string
+	username     string
+	repos        []string
+	token        string
+	DeleteRepos  []string
+	StatusDelete bool
 }
 
 type ErrorMesage struct {
 	Message string `json:"message"`
 }
 
+type Result struct {
+	Url        string
+	StatusCode int
+}
+
+func (g *API) GetStatuses(user *User) <-chan Result {
+	var urls []string
+	ch := make(chan Result)
+	for _, repo := range user.DeleteRepos {
+		url := fmt.Sprintf("%s/repos/%s", g.baseURL, repo)
+		urls = append(urls, url)
+	}
+	for _, url := range urls {
+		go g.DeleteRepository(url, user.token, ch)
+	}
+	return ch
+}
+
 func (g *API) GetRepository(user *User) error {
-	url := fmt.Sprintf("%s/%s/repos", g.baseURL, user.username)
+	url := fmt.Sprintf("%s/user/repos?per_page=200&type=all", g.baseURL)
 	log.Printf("Fetching %s", url)
-	resp, err := g.Client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	bearer := fmt.Sprintf("Bearer %s", user.token)
+	req.Header.Add("Authorization", bearer)
+	resp, err := g.Client.Do(req)
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 	defer resp.Body.Close()
@@ -61,23 +86,20 @@ func (g *API) GetRepository(user *User) error {
 
 }
 
-func (g *API) DeleteRepository(user User) {
-	url := fmt.Sprintf("%s/%s", g.baseURL, user.username)
-	req, err := http.NewRequest("DELETE", url, nil)
-	req.Header.Add("Authorization: token", user.token)
-	if err != nil {
-		fmt.Println(err)
-	}
+func (g *API) DeleteRepository(url, token string, ch chan Result) {
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	bearer := fmt.Sprintf("Bearer %s", token)
+	req.Header.Add("Authorization", bearer)
 	resp, err := g.Client.Do(req)
 	if err != nil {
-		log.Println(err)
+		panic(err)
 	}
-	fmt.Println(resp.Status)
-	//body, err := ioutil.ReadAll(resp.Body)
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
-	//fmt.Println(resp.body)
+	result := Result{
+		Url:        url,
+		StatusCode: resp.StatusCode,
+	}
+	ch <- result
+
 }
 
 func Menu(user *User) {
@@ -91,44 +113,50 @@ func Menu(user *User) {
 			},
 		},
 	}
-	answers := []string{}
-	err := survey.Ask(multiQs, &answers, survey.WithPageSize(20))
+
+	err := survey.Ask(multiQs, &user.DeleteRepos, survey.WithPageSize(20))
 	if err != nil {
-		log.Println(err.Error())
-		return
+		log.Fatalln(err.Error())
+
 	}
-	DeleteRepo := false
+
+	user.StatusDelete = false
 	prompt := &survey.Confirm{
 		Message: "Do you delete repos",
 	}
-	survey.AskOne(prompt, &DeleteRepo)
-	if DeleteRepo {
-		// print the answers
-		fmt.Printf("you chose: %s\n", strings.Join(answers, ", "))
-
-		prompt := &survey.Password{
-			Message: "Please enter your Github's TOKEN: ",
-		}
-		survey.AskOne(prompt, &user.token)
-
+	survey.AskOne(prompt, &user.StatusDelete)
+	if user.StatusDelete {
+		fmt.Printf("you chose: %s\n", Red(strings.Join(user.DeleteRepos, ", ")))
+	} else {
+		os.Exit(0)
 	}
 
 }
 func main() {
 	user := User{}
-	github := API{Client: &http.Client{}, baseURL: baseURL}
 	flag.StringVar(&user.username, "username", "", "Your username github")
 	flag.Parse()
 
 	if len(os.Args) == 1 {
 		usage()
 	}
+	promptp := &survey.Password{
+		Message: "Please enter your Github's TOKEN: ",
+	}
+	survey.AskOne(promptp, &user.token)
+	github := API{Client: &http.Client{}, baseURL: baseURL}
 	error := github.GetRepository(&user)
 	if error != nil {
 		log.Fatalln(error)
 
 	}
 	Menu(&user)
+	ch := github.GetStatuses(&user)
+	for i := 0; i < len(user.DeleteRepos); i++ {
+		res := <-ch
+		fmt.Printf("url: %s - status code: %d\n", res.Url, res.StatusCode)
+	}
+	fmt.Println("complete.")
 
 }
 
