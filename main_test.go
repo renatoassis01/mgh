@@ -10,6 +10,8 @@ import (
 )
 
 var (
+	ch = make(chan Result)
+
 	ResultFake     = []string{"foo/repo01", "foo/repo02", "foo/repo03"}
 	ResposeGitFake = []interface{}{
 		map[string]interface{}{
@@ -22,13 +24,17 @@ var (
 			"full_name": "foo/repo03",
 		},
 	}
+	ResponseGitStatus = Result{
+		Url:        fmt.Sprintf("https://fake.git.server/repos/%s", ResultFake[0]),
+		StatusCode: 202,
+	}
 
 	user = User{username: "foo", token: "tkonsdsfwekennnnn"}
 	api  = API{Client: &http.Client{}, baseURL: "https://fake.git.server"}
 )
 
 func TestGetRepository(t *testing.T) {
-	GetUrl := fmt.Sprintf("/%s/repos", user.username)
+	GetUrl := "/users/repos?per_page=200&type=all"
 	defer gock.Off()
 	gock.New("https://fake.git.server").
 		Get(GetUrl).
@@ -42,5 +48,18 @@ func TestGetRepository(t *testing.T) {
 	assert.Exactly(t, gock.IsDone(), true)
 }
 func TestDeleteRepository(t *testing.T) {
-	assert.Equal(t, 2, 1)
+
+	DeleteUrl := fmt.Sprintf("/repos/%s", ResultFake[0])
+	defer gock.Off()
+	gock.New("https://fake.git.server").
+		Delete(DeleteUrl).
+		Reply(204).
+		JSON(ResposeGitFake)
+
+	ch := api.GetStatuses(&user)
+	res := <-ch
+	assert.Equal(t, ResponseGitStatus, res)
+
+	// Verify that we don't have pending mocks
+	assert.Exactly(t, gock.IsDone(), true)
 }
